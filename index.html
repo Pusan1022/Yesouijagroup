@@ -169,59 +169,6 @@
     background: white;
   }
 
-  /* 청소 기록 (LOGS) */
-  .logs-day {
-    margin-bottom: 18px;
-  }
-  .logs-group {
-    background: var(--card);
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 8px 10px;
-    margin-bottom: 8px;
-  }
-  .logs-cleaner {
-    display: inline-block;
-    padding: 4px 10px;
-    border-radius: 4px;
-    font-size: 12px;
-    font-weight: 700;
-    margin-bottom: 6px;
-  }
-  .logs-count {
-    background: rgba(255,255,255,0.3);
-    padding: 1px 6px;
-    border-radius: 999px;
-    font-size: 10px;
-    margin-left: 4px;
-  }
-  .logs-rooms {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .logs-room {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 5px 8px;
-    background: #faf7f2;
-    border-radius: 5px;
-    font-size: 13px;
-    flex-wrap: wrap;
-  }
-  .logs-room-name {
-    font-weight: 600;
-  }
-  .logs-memo {
-    font-size: 11px;
-    color: var(--ink-soft);
-    background: white;
-    padding: 2px 6px;
-    border-radius: 4px;
-    border: 1px solid var(--line);
-    margin-left: auto;
-  }
   .tabs {
     display: flex;
     gap: 4px;
@@ -1041,7 +988,6 @@
       <button class="tab" data-view="tomorrow" data-i18n="tabTomorrow">내일</button>
       <button class="tab" data-view="bystaff" data-i18n="tabByStaff">직원별</button>
       <button class="tab" data-view="week" data-i18n="tabWeek">일정표</button>
-      <button class="tab" data-view="logs" data-i18n="tabLogs">기록</button>
       <button class="tab" data-view="ops" data-i18n="tabOps">운영정보</button>
     </div>
   </header>
@@ -1188,7 +1134,7 @@
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
   import {
-    getDatabase, ref, set, get, onValue, off,
+    getDatabase, ref, set, update, get, onValue, off,
     serverTimestamp, goOnline, goOffline
   } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-database.js";
 
@@ -1210,6 +1156,7 @@
     db: db,
     ref: ref,
     set: set,
+    update: update,
     get: get,
     onValue: onValue,
     off: off,
@@ -1239,7 +1186,6 @@ const CONFIG = {
   cloudSaveDebounceMs: 500,
   cloudLoadTimeoutMs: 10000,
   cloudSaveTimeoutMs: 12000,
-  echoIgnoreMs: 3000,  // Firebase는 빠르니 3초로 줄임
 };
 
 const PROXIES = [
@@ -1273,11 +1219,7 @@ const I18N = {
     btnAddBooking: '+ 예약',
     btnSettings: '설정',
     // 탭
-    tabToday: '오늘', tabTomorrow: '내일', tabByStaff: '직원별', tabWeek: '일정표', tabOps: '운영정보', tabLogs: '기록',
-    logsTitle: '📜 청소 기록',
-    logsSub: '지난 14일 동안의 청소 내역 (자동 저장됨)',
-    logsEmpty: '아직 청소 기록이 없어요. 청소가 완료된 다음 날부터 자동으로 기록됩니다.',
-    logsCleanerNone: '담당자 미지정',
+    tabToday: '오늘', tabTomorrow: '내일', tabByStaff: '직원별', tabWeek: '일정표', tabOps: '운영정보',
     opsTitle: '🔧 운영 정보',
     opsSub: '비밀번호, 와이파이, 공유사항 등 상시 공유 정보',
     opsSectionTitle: (name) => `📌 ${name}`,
@@ -1418,11 +1360,7 @@ const I18N = {
     statusNeedSetup: 'Setup required',
     btnAddBooking: '+ Booking',
     btnSettings: 'Settings',
-    tabToday: 'Today', tabTomorrow: 'Tomorrow', tabByStaff: 'By Staff', tabWeek: 'Schedule', tabOps: 'Ops Info', tabLogs: 'History',
-    logsTitle: '📜 Cleaning History',
-    logsSub: 'Last 14 days of cleanings (auto-saved)',
-    logsEmpty: 'No cleaning history yet. Records will be saved automatically after each day passes.',
-    logsCleanerNone: 'Unassigned',
+    tabToday: 'Today', tabTomorrow: 'Tomorrow', tabByStaff: 'By Staff', tabWeek: 'Schedule', tabOps: 'Ops Info',
     opsTitle: '🔧 Operations Info',
     opsSub: 'Passwords, WiFi, shared notes - always-on reference',
     opsSectionTitle: (name) => `📌 ${name}`,
@@ -1705,7 +1643,6 @@ function loadLocal() {
 let cloudSaveTimer = null;
 let cloudSyncPaused = false;
 let lastCloudSavedAt = null;
-let lastLocalSaveAt = 0;  // 마지막으로 우리가 cloudSave 시작/완료한 시각 (echo 폴링 방지용)
 
 // ─── 안전성 강화 변수들 ───
 let cloudSaveInFlight = false;     // 동시에 여러 cloudSave가 실행되는 것 방지 (락)
@@ -1751,41 +1688,57 @@ async function jsonbinLoadForMigration() {
   finally { clearTimeout(timer); }
 }
 
-function cloudSaveDebounced() {
-  // debounce 대기 중에도 폴링이 자기 echo를 가져오지 않게 시각 갱신
-  lastLocalSaveAt = Date.now();
+// ─── 변경 필드 추적 (부분 저장용) ───
+// 전체 문서를 set()으로 덮어쓰면, 이 기기가 갖고 있던 오래된 데이터가
+// 다른 기기에서 쓴 운영정보/메모를 통째로 되돌려버리는 사고가 생긴다.
+// 그래서 "이 기기에서 실제로 바꾼 필드"만 update()로 부분 저장한다.
+const SYNC_KEYS = ['branches','rooms','staff','notes','manualBookings','dayMemo',
+  'opsSections','commonAreaCleanings','cleaningLogs','archivedBookings','confirmedBookings'];
+let dirtyKeys = new Set();
+
+function markDirty(keys) {
+  for (const k of keys) dirtyKeys.add(k);
+}
+
+function cloudSaveDebounced(...keys) {
+  // 어떤 필드가 바뀌었는지 기록 (키를 안 넘기면 안전하게 전체로 간주)
+  markDirty(keys.length ? keys : SYNC_KEYS);
   // 저장 대기 중 표시
   setSaveStatus('saving');
   if (cloudSaveTimer) clearTimeout(cloudSaveTimer);
   cloudSaveTimer = setTimeout(cloudSave, CONFIG.cloudSaveDebounceMs);
 }
 
-// 현재 state로 payload 생성 (재사용)
+// 현재 state로 payload 생성 (keys에 지정된 필드만 포함 - 부분 저장)
 // Firebase는 undefined를 거부하므로 JSON 직렬화/역직렬화로 깨끗이 정리
-function buildPayload() {
+function buildPayload(keys) {
+  const useKeys = keys && keys.length ? keys : SYNC_KEYS;
   const raw = {
     v: 2,
     savedAt: new Date().toISOString(),
-    branches: state.branches,
-    rooms: state.rooms,
-    staff: state.staff,
-    notes: state.notes,
-    manualBookings: state.manualBookings,
-    dayMemo: state.dayMemo,
-    opsSections: state.opsSections,
-    commonAreaCleanings: state.commonAreaCleanings,
-    cleaningLogs: state.cleaningLogs,
-    archivedBookings: state.archivedBookings,
-    confirmedBookings: state.confirmedBookings,
   };
+  for (const k of useKeys) {
+    if (SYNC_KEYS.includes(k)) raw[k] = state[k];
+  }
   // JSON 왕복으로 undefined 제거 (Firebase가 undefined를 거부함)
   return JSON.parse(JSON.stringify(raw));
 }
 
 // 한 번의 저장 시도 (재시도 로직에서 사용)
+// update()는 payload에 포함된 필드만 갱신하므로, 다른 기기가 쓴 나머지 필드는 보존된다.
 async function cloudPutOnce(payload, timeoutMs) {
   await waitForFirebase();
-  // Firebase set은 자체 타임아웃이 있지만 우리도 별도로 적용
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Firebase save timeout')), timeoutMs);
+    window.fb.update(window.fb.ref(window.fb.db, CONFIG.fbDataPath), payload)
+      .then(() => { clearTimeout(timer); resolve(true); })
+      .catch(e => { clearTimeout(timer); reject(e); });
+  });
+}
+
+// 전체 문서 저장 (마이그레이션 등 최초 1회용)
+async function cloudSetOnce(payload, timeoutMs) {
+  await waitForFirebase();
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('Firebase save timeout')), timeoutMs);
     window.fb.set(window.fb.ref(window.fb.db, CONFIG.fbDataPath), payload)
@@ -1852,17 +1805,18 @@ async function flushPendingQueue() {
 async function cloudSave() {
   // 락: 이미 실행 중이면 중복 실행 방지
   if (cloudSaveInFlight) return;
+  // 바뀐 게 없으면 저장할 것도 없음
+  if (dirtyKeys.size === 0) { setSaveStatus('saved'); return; }
   cloudSaveInFlight = true;
 
-  // 저장 시작 시각을 기록 → 직후 echo 리스너가 자기 변경을 다시 적용하지 않도록 사용
-  lastLocalSaveAt = Date.now();
   setSaveStatus('saving');
 
-  const payload = buildPayload();
-  let lastError = null;
+  // 지금까지 쌓인 변경 필드를 스냅샷으로 가져가고, 진행 중 새 변경은 새 집합에 쌓이게 함
+  const savingKeys = Array.from(dirtyKeys);
+  dirtyKeys = new Set();
 
-  // Firebase 실시간 리스너가 항상 최신 상태를 우리에게 push하므로
-  // 저장 직전 별도 확인은 불필요. 바로 저장 진행.
+  const payload = buildPayload(savingKeys);
+  let lastError = null;
 
   // 재시도 로직: 지수 백오프
   for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt++) {
@@ -1870,11 +1824,16 @@ async function cloudSave() {
       await cloudPutOnce(payload, CONFIG.cloudSaveTimeoutMs);
       // 성공
       lastCloudSavedAt = payload.savedAt;
-      lastLocalSaveAt = Date.now();
       setSaveStatus('saved');
       cloudSaveInFlight = false;
       // 이전에 실패해서 큐에 있던 데이터도 같이 비우기 (현재 저장으로 갱신됐으므로)
       clearPendingQueue();
+      // 저장 중에 새 변경이 쌓였는데 예약된 저장이 없으면 이어서 저장
+      if (dirtyKeys.size > 0 && !cloudSaveTimer) {
+        cloudSaveTimer = setTimeout(cloudSave, CONFIG.cloudSaveDebounceMs);
+      }
+      // 저장 중 보류됐던 다른 기기 변경사항이 있으면 이제 적용 시도
+      tryApplyPendingCloud();
       return;
     } catch (e) {
       lastError = e;
@@ -1889,22 +1848,11 @@ async function cloudSave() {
   // 모든 재시도 실패
   console.error('Cloud save failed after all retries:', lastError);
   setSaveStatus('error');
+  // 실패한 필드는 다시 dirty로 되돌림 (다음 저장에 포함)
+  markDirty(savingKeys);
   // 데이터 보존: 큐에 저장 → 다음 접속 시 재전송
   savePendingQueue(payload);
   cloudSaveInFlight = false;
-}
-
-// 즉시 저장 (debounce 무시) - 페이지 닫힐 때나 백그라운드 갈 때 사용
-async function cloudSaveImmediate() {
-  // 대기 중인 debounce 타이머가 있으면 취소
-  if (cloudSaveTimer) {
-    clearTimeout(cloudSaveTimer);
-    cloudSaveTimer = null;
-  }
-  // 로컬은 동기적으로 즉시 저장
-  saveLocal();
-  // 클라우드 저장 시도
-  await cloudSave();
 }
 
 // 페이지가 진짜 닫힐 때 - Firebase set 비동기 호출 (페이지 unload 중에도 큐잉됨)
@@ -1928,27 +1876,31 @@ function cloudSaveBeacon() {
   // 로컬 저장은 동기적으로 확실히 수행
   saveLocal();
 
+  // 바뀐 게 없으면 보낼 것도 없음
+  if (dirtyKeys.size === 0) return;
+  const beaconKeys = Array.from(dirtyKeys);
+
   // Firebase가 준비 안 됐으면 큐에 저장만 하고 끝
   if (!window.fb || !window.fb.ready) {
-    savePendingQueue(buildPayload());
+    savePendingQueue(buildPayload(beaconKeys));
     return;
   }
 
-  const payload = buildPayload();
+  const payload = buildPayload(beaconKeys);
 
   // Firebase set은 백그라운드에서도 어느 정도 보장됨
   // 실패 시를 대비해 로컬 큐에도 저장
   try {
-    window.fb.set(window.fb.ref(window.fb.db, CONFIG.fbDataPath), payload)
+    window.fb.update(window.fb.ref(window.fb.db, CONFIG.fbDataPath), payload)
       .then(() => {
         lastCloudSavedAt = payload.savedAt;
+        for (const k of beaconKeys) dirtyKeys.delete(k);
         clearPendingQueue();
       })
       .catch(e => {
         console.warn('Beacon save failed:', e);
         savePendingQueue(payload);
       });
-    lastLocalSaveAt = Date.now();
   } catch (e) {
     console.warn('Beacon save error:', e);
     savePendingQueue(payload);
@@ -2133,13 +2085,10 @@ async function syncICal(force) {
   // 에어비앤비/부킹닷컴 iCal은 지난 예약을 빼고 보내므로,
   // 새 동기화에서 사라진 과거 예약을 archivedBookings에 보존한다.
   // 그래야 직원 일정표(달력)에 지난 청소 기록이 그대로 남는다.
-  preservePastBookings(newBookings);
-
-  // 어제까지의 청소를 자동으로 로그에 보존 (변경 있을 때만 저장)
-  const archived = archiveCleaningsToLog();
-  if (archived) {
+  const archiveChanged = preservePastBookings(newBookings);
+  if (archiveChanged) {
     saveLocal();
-    cloudSaveDebounced();
+    cloudSaveDebounced('archivedBookings');
   }
 
   setStatus(t('statusSynced'), '');
@@ -2152,25 +2101,31 @@ function preservePastBookings(newBookings) {
   if (!state.archivedBookings) state.archivedBookings = [];
   const today = new Date(); today.setHours(0,0,0,0);
   const todayStr = fmtDate(today);
+  let changed = false;
 
-  // 현재 동기화 결과의 키 집합 (중복 방지)
-  const currentKeys = new Set(newBookings.map(b => `${b.roomId}|${b.checkin}|${b.checkout}`));
+  // 기존 아카이브 키 집합 (중복 방지 - O(n) 조회)
+  const archivedKeys = new Set(state.archivedBookings.map(a => `${a.roomId}|${a.checkin}|${a.checkout}`));
 
   // 1) 이번 동기화에서 보이는 예약 중, 체크아웃이 과거인 것을 아카이브에 보강
   //    (현재 보이는 동안 미리 저장해두면, 나중에 iCal에서 빠져도 남는다)
   for (const b of newBookings) {
     if (b.checkout < todayStr) {  // 이미 체크아웃 지난 예약
       const key = `${b.roomId}|${b.checkin}|${b.checkout}`;
-      const exists = state.archivedBookings.some(a => `${a.roomId}|${a.checkin}|${a.checkout}` === key);
-      if (!exists) {
+      if (!archivedKeys.has(key)) {
         state.archivedBookings.push({ ...b, archived: true });
+        archivedKeys.add(key);
+        changed = true;
       }
     }
   }
 
   // 2) 너무 오래된 아카이브는 정리 (180일 이전 체크아웃은 삭제 - 용량 관리)
   const cutoff = fmtDate(addDays(today, -180));
+  const before = state.archivedBookings.length;
   state.archivedBookings = state.archivedBookings.filter(a => a.checkout >= cutoff);
+  if (state.archivedBookings.length !== before) changed = true;
+
+  return changed;
 }
 
 function getAllBookings() {
@@ -2292,112 +2247,6 @@ function allCleaningsForDate(date) {
   return result;
 }
 
-// ════════════════════════════════════════════════════════════
-// 청소 기록 - 지나간 날의 청소 정보를 자동 보존
-// ════════════════════════════════════════════════════════════
-const CLEANING_LOG_KEEP_DAYS = 14; // 14일치 보관
-
-// 어제까지의 청소 정보를 cleaningLogs에 자동 기록
-// (오늘이 지나간 날들을 매번 처리)
-// 마지막으로 archive 풀스캔한 날짜 (메모리)
-let lastArchiveDay = null;
-
-function archiveCleaningsToLog() {
-  if (!state.cleaningLogs) state.cleaningLogs = [];
-
-  const today = new Date(); today.setHours(0,0,0,0);
-  const todayStr = fmtDate(today);
-  const cutoff = addDays(today, -CLEANING_LOG_KEEP_DAYS);
-  const cutoffStr = fmtDate(cutoff);
-
-  let changed = false;
-
-  // 1. 오래된 기록 삭제 (14일 이전) - 매번 검사
-  const before = state.cleaningLogs.length;
-  state.cleaningLogs = state.cleaningLogs.filter(log => log.date >= cutoffStr);
-  if (state.cleaningLogs.length !== before) changed = true;
-
-  // 2. 어제 데이터 추가 - 새 날짜 됐을 때만 풀스캔, 아니면 어제 하나만
-  const needFullScan = (lastArchiveDay !== todayStr);
-
-  const existingKeys = new Set(state.cleaningLogs.map(l => `${l.date}|${l.roomId}|${l.checkin}`));
-
-  // 새 날짜 됐으면 14일치 풀스캔, 아니면 어제만 (혹시 누락 보강용)
-  const scanDays = needFullScan ? CLEANING_LOG_KEEP_DAYS : 1;
-
-  for (let i = 1; i <= scanDays; i++) {
-    const date = addDays(today, -i);
-    const dStr = fmtDate(date);
-    if (dStr < cutoffStr) break;
-
-    const tasks = cleaningTasksForDate(date);
-    for (const b of tasks) {
-      const key = `${dStr}|${b.roomId}|${b.checkin}`;
-      if (existingKeys.has(key)) continue;
-
-      const room = getRoom(b.roomId);
-      const branch = room ? getBranch(room.branchId) : null;
-      const note = getNote(b);
-      const cleaner = note.cleanerId ? getStaff(note.cleanerId) : null;
-
-      state.cleaningLogs.push({
-        date: dStr,
-        roomId: b.roomId,
-        checkin: b.checkin,
-        checkout: b.checkout,
-        roomName: room ? room.name : '?',
-        branchId: room ? room.branchId : null,
-        branchName: branch ? branch.name : '',
-        branchColor: branch ? branch.color : '#999',
-        cleanerId: note.cleanerId || null,
-        cleanerName: cleaner ? cleaner.name : '',
-        cleanerColor: cleaner ? cleaner.color : '#a89880',
-        memo: note.memo || '',
-      });
-      existingKeys.add(key);
-      changed = true;
-    }
-
-    // 공용공간 청소도 같이 보존
-    // 기존 키 형식(`날짜|roomId|checkin`)과 충돌하지 않게 'common' prefix 사용
-    const commons = commonCleaningsForDate(date);
-    for (const c of commons) {
-      const key = `${dStr}|common|${c.id}`;
-      if (existingKeys.has(key)) continue;
-
-      const branch = getBranch(c.branchId);
-      const cleaner = c.cleanerId ? getStaff(c.cleanerId) : null;
-      const labelText = c.label || t('commonLabelDefault');
-
-      state.cleaningLogs.push({
-        date: dStr,
-        // 공용공간 청소 식별자: roomId 자리에 'common:<id>'를 넣어 기존 그룹핑 로직과 충돌 안 하게
-        roomId: 'common:' + c.id,
-        checkin: '',
-        checkout: '',
-        // 기록 화면에서는 roomName 자리에 라벨이 표시됨 → "🏠 공용공간 · 1층 복도" 형식
-        roomName: `🏠 ${t('commonBadge')}${c.label ? ' · ' + c.label : ''}`,
-        branchId: c.branchId,
-        branchName: branch ? branch.name : '',
-        branchColor: branch ? branch.color : '#999',
-        cleanerId: c.cleanerId || null,
-        cleanerName: cleaner ? cleaner.name : '',
-        cleanerColor: cleaner ? cleaner.color : '#a89880',
-        memo: c.memo || '',
-        isCommon: true,  // 추후 필요시 구분용 플래그
-      });
-      existingKeys.add(key);
-      changed = true;
-    }
-  }
-
-  if (changed) {
-    state.cleaningLogs.sort((a, b) => b.date.localeCompare(a.date));
-  }
-  lastArchiveDay = todayStr;
-  return changed; // 변경 여부 반환
-}
-
 function setStatus(text, cls) {
   $('status-text').textContent = text;
   const dot = $('status-dot');
@@ -2428,7 +2277,6 @@ function render() {
     if (state.view === 'dayDetail') return renderDayDetailView();
     if (state.view === 'bystaff') return renderByStaff();
     if (state.view === 'week') return renderTimeline();
-    if (state.view === 'logs') return renderLogs();
     if (state.view === 'ops') return renderOps();
     if (state.view === 'all') return renderAll();
   } catch (e) {
@@ -2606,15 +2454,18 @@ function attachDayMemoHandler(dateStr) {
   input.oninput = () => {
     autoResize();
     if (savedLabel) savedLabel.textContent = t('memoTyping');
+    // 입력 즉시 state에 반영 (지연 반영으로 인한 유실 방지)
+    const val = input.value.trim();
+    if (!state.dayMemo) state.dayMemo = {};
+    if (val) state.dayMemo[dateStr] = val;
+    else delete state.dayMemo[dateStr];
+    markDirty(['dayMemo']);
+    // 저장(로컬+클라우드)만 디바운스
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
-      const val = input.value.trim();
-      if (!state.dayMemo) state.dayMemo = {};
-      if (val) state.dayMemo[dateStr] = val;
-      else delete state.dayMemo[dateStr];
       saveLocal();
-      cloudSaveDebounced();
-      if (savedLabel) savedLabel.textContent = val ? t('memoSaved') : '';
+      cloudSaveDebounced('dayMemo');
+      if (savedLabel) savedLabel.textContent = input.value.trim() ? t('memoSaved') : '';
     }, 400);
   };
 }
@@ -3162,83 +3013,6 @@ function renderTimelineRow(room, branch, dates, allBookings, numDays, minWidth) 
 // ════════════════════════════════════════════════════════════
 // 운영정보 (Ops) - 비밀번호, 공유사항 등
 // ════════════════════════════════════════════════════════════
-// ════════════════════════════════════════════════════════════
-// 청소 기록 (Logs) - 지난 14일 자동 보존
-// ════════════════════════════════════════════════════════════
-function renderLogs() {
-  // 화면 진입 시 한 번 더 archive (변경 있을 때만 저장)
-  const archived = archiveCleaningsToLog();
-  if (archived) {
-    saveLocal();
-    cloudSaveDebounced();
-  }
-
-  const logs = state.cleaningLogs || [];
-
-  let html = `<h2 style="font-family:'Georgia',serif; font-size:22px; margin-bottom:6px;">${t('logsTitle')}</h2>
-    <p style="font-size:12px; color:var(--ink-soft); margin-bottom:14px;">${t('logsSub')}</p>`;
-
-  if (logs.length === 0) {
-    html += `<div class="info-msg">${t('logsEmpty')}</div>`;
-    main.innerHTML = html;
-    return;
-  }
-
-  // 날짜별로 그룹핑
-  const byDate = {};
-  logs.forEach(log => {
-    if (!byDate[log.date]) byDate[log.date] = [];
-    byDate[log.date].push(log);
-  });
-  const dates = Object.keys(byDate).sort().reverse(); // 최근부터
-
-  dates.forEach(dStr => {
-    const date = parseDate(dStr);
-    const dowKey = ['dowSun','dowMon','dowTue','dowWed','dowThu','dowFri','dowSat'][date.getDay()];
-    const dowText = currentLang === 'ko' ? `${dowKR(date)}요일` : t(dowKey);
-    const items = byDate[dStr];
-
-    html += `<div class="day-header">
-      <span class="day-date">${prettyDate(date)}</span>
-      <span class="day-dow">${dowText}</span>
-      <span class="day-tag" style="background:#8a7860">${items.length}</span>
-    </div>`;
-
-    html += `<div class="logs-day">`;
-    // 담당자별 그룹핑 (시각적으로 깔끔)
-    const byCleanerId = {};
-    items.forEach(log => {
-      const k = log.cleanerId || '__none__';
-      if (!byCleanerId[k]) byCleanerId[k] = [];
-      byCleanerId[k].push(log);
-    });
-    Object.keys(byCleanerId).forEach(k => {
-      const arr = byCleanerId[k];
-      const first = arr[0];
-      const cleanerName = first.cleanerName || t('logsCleanerNone');
-      const cleanerColor = first.cleanerColor || '#a89880';
-      const isUnassigned = !first.cleanerId;
-
-      html += `<div class="logs-group" style="border-left:4px solid ${cleanerColor};">
-        <div class="logs-cleaner" style="${isUnassigned ? 'background:#f5f0e8; color:#8a7860;' : `background:${cleanerColor}; color:white;`}">
-          🧹 ${escapeHtml(cleanerName)} <span class="logs-count">${arr.length}</span>
-        </div>
-        <div class="logs-rooms">`;
-      arr.forEach(log => {
-        html += `<div class="logs-room">
-          <span class="branch-tag" style="background:${log.branchColor};">${escapeHtml(log.branchName || '')}</span>
-          <span class="logs-room-name">${escapeHtml(log.roomName)}</span>
-          ${log.memo ? `<span class="logs-memo">📝 ${escapeHtml(log.memo)}</span>` : ''}
-        </div>`;
-      });
-      html += `</div></div>`;
-    });
-    html += `</div>`;
-  });
-
-  main.innerHTML = html;
-}
-
 function renderOps() {
   let html = `<h2 style="font-family:'Georgia',serif; font-size:22px; margin-bottom:6px;">${t('opsTitle')}</h2>
     <p style="font-size:12px; color:var(--ink-soft); margin-bottom:14px;">${t('opsSub')}</p>`;
@@ -3277,16 +3051,18 @@ function renderOps() {
     autoResize();
     setTimeout(autoResize, 0);
     let saveTimer = null;
+    const idx = +textarea.closest('[data-ops-idx]').dataset.opsIdx;
     textarea.oninput = () => {
       autoResize();
+      // 입력 즉시 state에 반영 (지연 반영으로 인한 유실 방지)
+      if (state.opsSections[idx]) {
+        state.opsSections[idx].content = textarea.value;
+        markDirty(['opsSections']);
+      }
       if (saveTimer) clearTimeout(saveTimer);
       saveTimer = setTimeout(() => {
-        const idx = +textarea.closest('[data-ops-idx]').dataset.opsIdx;
-        if (state.opsSections[idx]) {
-          state.opsSections[idx].content = textarea.value;
-          saveLocal();
-          cloudSaveDebounced();
-        }
+        saveLocal();
+        cloudSaveDebounced('opsSections');
       }, 400);
     };
   });
@@ -3294,15 +3070,17 @@ function renderOps() {
   // 제목 입력
   document.querySelectorAll('.ops-title-input').forEach(input => {
     let saveTimer = null;
+    const idx = +input.closest('[data-ops-idx]').dataset.opsIdx;
     input.oninput = () => {
+      // 입력 즉시 state에 반영
+      if (state.opsSections[idx]) {
+        state.opsSections[idx].title = input.value;
+        markDirty(['opsSections']);
+      }
       if (saveTimer) clearTimeout(saveTimer);
       saveTimer = setTimeout(() => {
-        const idx = +input.closest('[data-ops-idx]').dataset.opsIdx;
-        if (state.opsSections[idx]) {
-          state.opsSections[idx].title = input.value;
-          saveLocal();
-          cloudSaveDebounced();
-        }
+        saveLocal();
+        cloudSaveDebounced('opsSections');
       }, 400);
     };
   });
@@ -3314,7 +3092,7 @@ function renderOps() {
       if (!confirm(t('opsDeleteConfirm'))) return;
       state.opsSections.splice(idx, 1);
       saveLocal();
-      cloudSaveDebounced();
+      cloudSaveDebounced('opsSections');
       render();
     };
   });
@@ -3327,7 +3105,7 @@ function renderOps() {
       content: '',
     });
     saveLocal();
-    cloudSaveDebounced();
+    cloudSaveDebounced('opsSections');
     render();
   };
 }
@@ -3599,6 +3377,7 @@ async function saveSetupHandler() {
   state.rooms = Object.values(byRoomName);
 
   saveLocal();
+  markDirty(['branches', 'rooms', 'staff']);
   cloudSyncPaused = true;
   await cloudSave();
   cloudSyncPaused = false;
@@ -3735,7 +3514,7 @@ $('bm-confirm-real').onclick = () => {
   if (!state.confirmedBookings) state.confirmedBookings = {};
   state.confirmedBookings[state.bookingModalKey] = true;
   saveLocal();
-  cloudSaveDebounced();
+  cloudSaveDebounced('confirmedBookings');
   // 모달 다시 그려서 청소 설정 보이게
   openBookingModal(state.bookingModalKey);
   render();
@@ -3745,7 +3524,7 @@ $('bm-mark-block').onclick = () => {
   if (!state.bookingModalKey) return;
   if (state.confirmedBookings) delete state.confirmedBookings[state.bookingModalKey];
   saveLocal();
-  cloudSaveDebounced();
+  cloudSaveDebounced('confirmedBookings');
   openBookingModal(state.bookingModalKey);
   render();
 };
@@ -3769,7 +3548,7 @@ $('bm-save').onclick = () => {
     };
   }
   saveLocal();
-  cloudSaveDebounced();
+  cloudSaveDebounced('notes');
   closeBookingModal();
   render();
 };
@@ -3782,7 +3561,7 @@ $('bm-delete').onclick = () => {
     state.manualBookings = state.manualBookings.filter(m => m.id !== found.manualId);
     delete state.notes[key];
     saveLocal();
-    cloudSaveDebounced();
+    cloudSaveDebounced('manualBookings', 'notes');
   }
   closeBookingModal();
   render();
@@ -3879,7 +3658,7 @@ $('mm-save').onclick = () => {
   }
 
   saveLocal();
-  cloudSaveDebounced();
+  cloudSaveDebounced('manualBookings', 'notes');
   closeManualModal();
   render();
 };
@@ -3957,7 +3736,7 @@ $('cm-save').onclick = () => {
   }
 
   saveLocal();
-  cloudSaveDebounced();
+  cloudSaveDebounced('commonAreaCleanings');
   closeCommonModal();
   render();
 };
@@ -3966,7 +3745,7 @@ $('cm-delete').onclick = () => {
   if (!confirm(t('commonDeleteConfirm'))) return;
   state.commonAreaCleanings = (state.commonAreaCleanings || []).filter(c => c.id !== state.commonEditingId);
   saveLocal();
-  cloudSaveDebounced();
+  cloudSaveDebounced('commonAreaCleanings');
   closeCommonModal();
   render();
 };
@@ -4009,14 +3788,11 @@ document.addEventListener('click', (e) => {
 });
 
 $('btn-refresh').onclick = async () => {
-  // 1. 클라우드에서 다른 기기 변경사항 즉시 가져옴
+  // 1. 클라우드에서 다른 기기 변경사항 즉시 가져옴 (안전 적용 큐를 거침)
   setStatus(t('statusCloudCheck'), 'syncing');
   const cloud = await cloudLoad();
   if (cloud && cloud.savedAt && cloud.savedAt !== lastCloudSavedAt) {
-    if (applyCloudData(cloud)) {
-      lastCloudSavedAt = cloud.savedAt;
-      saveLocal();
-    }
+    queueCloudData(cloud);
   }
   // 2. iCal 재동기화 (force - 캐시 무시하고 강제로 다시 받음)
   await syncICal(true);
@@ -4074,7 +3850,7 @@ async function migrateFromJsonbin() {
 
     // jsonbin 데이터를 Firebase에 저장 (undefined 제거)
     const cleanData = JSON.parse(JSON.stringify(jsonbinData));
-    await cloudPutOnce(cleanData, CONFIG.cloudSaveTimeoutMs);
+    await cloudSetOnce(cleanData, CONFIG.cloudSaveTimeoutMs);
     localStorage.setItem(MIGRATION_KEY, 'done');
     console.log('Migration successful');
     return true;
@@ -4086,6 +3862,61 @@ async function migrateFromJsonbin() {
     return false;
   }
 }
+
+// ─── 다른 기기 변경사항 수신 & 안전 적용 ───
+// 기존 문제: 입력 중/모달 중에 도착한 변경을 그냥 버렸음 (onValue는 같은 데이터를
+// 다시 보내주지 않으므로 "다음 변경 때 적용"이 되지 않음). 그 상태에서 이 기기가
+// 저장하면 상대방의 운영정보/메모가 유실됐다.
+// 해결: 즉시 적용이 곤란하면 pendingCloudData에 보관했다가 안전해지면 적용.
+let pendingCloudData = null;
+
+// 동기화 대상 필드만 뽑아 비교용 문자열 생성 (불필요한 재렌더 방지)
+function syncStateJson() {
+  const obj = {};
+  for (const k of SYNC_KEYS) obj[k] = state[k];
+  return JSON.stringify(obj);
+}
+
+function isSafeToApplyCloud() {
+  // 이 기기에 아직 클라우드로 안 보낸 변경이 있으면 보류
+  // (저장 완료 후 echo가 오면 그때 병합된 최신본이 적용됨)
+  if (cloudSaveInFlight || cloudSaveTimer || dirtyKeys.size > 0) return false;
+  // 모달 열려있거나 입력 중이면 보류
+  if (state.bookingModalKey) return false;
+  if ($('manual-modal') && $('manual-modal').classList.contains('open')) return false;
+  if ($('common-modal') && $('common-modal').classList.contains('open')) return false;
+  const focused = document.activeElement;
+  if (focused && (focused.tagName === 'INPUT' || focused.tagName === 'TEXTAREA')) return false;
+  return true;
+}
+
+function tryApplyPendingCloud() {
+  if (!pendingCloudData) return;
+  if (!isSafeToApplyCloud()) return;
+  const cloud = pendingCloudData;
+  pendingCloudData = null;
+
+  const before = syncStateJson();
+  if (applyCloudData(cloud)) {
+    lastCloudSavedAt = cloud.savedAt;
+    saveLocal();
+    // 실제로 내용이 달라졌을 때만 다시 그림
+    if (syncStateJson() !== before) {
+      render();
+      console.log('Realtime update applied');
+    }
+  }
+}
+
+function queueCloudData(cloud) {
+  if (!cloud || !cloud.savedAt) return;
+  pendingCloudData = cloud;
+  tryApplyPendingCloud();
+}
+
+// 입력이 끝나거나(포커스 해제) 주기적으로, 보류된 변경사항 적용 시도
+document.addEventListener('focusout', () => { setTimeout(tryApplyPendingCloud, 700); });
+setInterval(tryApplyPendingCloud, 3000);
 
 // Firebase 실시간 리스너 설정 (다른 사람 변경을 즉시 감지)
 let realtimeUnsubscribe = null;
@@ -4101,27 +3932,9 @@ function setupRealtimeListener() {
   const callback = (snapshot) => {
     const cloud = snapshot.val();
     if (!cloud || !cloud.savedAt) return;
-
-    // 우리가 방금 저장한 데이터의 echo면 무시
-    if (cloud.savedAt === lastCloudSavedAt) return;
-    if (cloudSaveInFlight) return;
-    if (cloudSaveTimer) return;
-    if (Date.now() - lastLocalSaveAt < CONFIG.echoIgnoreMs) return;
-
-    // 모달 열려있거나 입력 중이면 적용 보류 (다음 변경 때 적용됨)
-    if (state.bookingModalKey) return;
-    if ($('manual-modal') && $('manual-modal').classList.contains('open')) return;
-    if ($('common-modal') && $('common-modal').classList.contains('open')) return;
-    const focused = document.activeElement;
-    if (focused && (focused.tagName === 'INPUT' || focused.tagName === 'TEXTAREA')) return;
-
-    // 다른 사람의 변경사항 → 적용
-    if (applyCloudData(cloud)) {
-      lastCloudSavedAt = cloud.savedAt;
-      saveLocal();
-      render();
-      console.log('Realtime update applied');
-    }
+    // 우리가 방금 저장한 데이터의 echo도 병합된 최신본이므로 버리지 않고 큐에 넣는다.
+    // (내용이 같으면 tryApplyPendingCloud가 재렌더 없이 조용히 넘어감)
+    queueCloudData(cloud);
   };
 
   window.fb.onValue(dataRef, callback);
@@ -4220,18 +4033,11 @@ document.addEventListener('visibilitychange', async () => {
   if (state.bookingModalKey) return;
   if ($('manual-modal').classList.contains('open')) return;
   if ($('common-modal').classList.contains('open')) return;
-  // 클라우드 빠르게 확인
+  // 클라우드 빠르게 확인 (안전 적용 큐를 거침 - 미저장 로컬 변경을 덮어쓰지 않음)
   try {
     const cloud = await cloudLoad();
-    // echo 가드: 저장 진행 중이거나 최근 저장 직후면 적용 보류
-    if (cloudSaveTimer) return;
-    if (Date.now() - lastLocalSaveAt < CONFIG.echoIgnoreMs) return;
     if (cloud && cloud.savedAt && cloud.savedAt !== lastCloudSavedAt) {
-      if (applyCloudData(cloud)) {
-        lastCloudSavedAt = cloud.savedAt;
-        saveLocal();
-        render();
-      }
+      queueCloudData(cloud);
     }
     // iCal은 캐시 있으면 즉시, 3분 지났으면 새로 받음
     await syncICal(false);

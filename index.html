@@ -1110,17 +1110,23 @@ const CONFIG = {
   defaultCheckoutTime: '11:00',
   cloudBin: '69eab3fa36566621a8e613cc',
   cloudKey: '$2a$10$6JBf/tDmHHw8OUo7kOu4qeCaR/z1ig/ebimoPu7/GxXsDsdG2855O',
+  // 전용 중계 서버 (Cloudflare Worker) 주소 - 비워두면 무료 중계 서버만 사용
+  workerUrl: '',
   cloudUrl: 'https://api.jsonbin.io/v3/b',
   cloudPollMs: 30000,
   cloudSaveDebounceMs: 300,
 };
 
 const PROXIES = [
+  ...(CONFIG.workerUrl ? [(url) => `${CONFIG.workerUrl.replace(/\/$/, '')}/?url=${encodeURIComponent(url)}`] : []),
   (url) => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
   (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
   (url) => `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(url)}`,
   (url) => `https://cors-proxy.fringe.zone/${url}`,
   (url) => `https://thingproxy.freeboard.io/fetch/${url}`,
+  (url) => `https://cors.eu.org/${url}`,
+  (url) => `https://api.cors.lol/?url=${encodeURIComponent(url)}`,
+  (url) => `https://corsproxy.org/?${encodeURIComponent(url)}`,
 ];
 
 const STORAGE_KEY = 'schedule_v2_data';

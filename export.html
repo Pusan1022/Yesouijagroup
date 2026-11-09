@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>기록 꺼내기</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;padding:16px;background:#faf7f2;color:#1a1714}
+h1{font-size:20px;margin:0 0 6px}p{font-size:13px;color:#6b6560;margin:0 0 12px}
+.box{background:#fff;border:1px solid #e8e2d8;border-radius:10px;padding:12px;margin-bottom:12px}
+button{font:inherit;font-size:15px;font-weight:700;padding:12px;border-radius:8px;border:0;background:#d64933;color:#fff;width:100%;margin-bottom:8px}
+button.sec{background:#1a1714}
+table{width:100%;border-collapse:collapse;font-size:12px}td,th{border-bottom:1px solid #eee;padding:5px 4px;text-align:left}
+.ok{color:#2d7a4f;font-weight:700}.no{color:#c85a3a;font-weight:700}
+</style></head><body>
+<h1>📦 이 폰에 남은 기록 꺼내기</h1>
+<p>이 페이지는 앱을 실행하지 않고, 이 폰에 저장된 숙소 스케줄 기록만 읽어요. 아무것도 바꾸거나 지우지 않아요.</p>
+<div class="box" id="sum"></div>
+<button id="dl">💾 전체 기록 파일로 저장</button>
+<button class="sec" id="cp">📋 전체 기록 복사하기</button>
+<div class="box"><b>Camilo 청소 내역</b><div id="list" style="margin-top:8px"></div></div>
+<script>
+var raw=null,d=null;
+try{raw=localStorage.getItem('schedule_v2_data');d=raw?JSON.parse(raw):null;}catch(e){}
+var sum=document.getElementById('sum'),list=document.getElementById('list');
+if(!d){sum.innerHTML='<span class="no">이 폰에는 저장된 기록이 없어요.</span>';}
+else{
+  var rooms={},br={};(d.rooms||[]).forEach(function(r){rooms[r.id]=r});(d.branches||[]).forEach(function(b){br[b.id]=b.name});
+  var cam=(d.staff||[]).filter(function(s){return /camilo|카밀로/i.test(s.name||'')})[0];
+  var rows={};
+  function add(date,b,room,stay,memo){rows[date+'|'+b+'|'+room]={date:date,b:b,room:room,stay:stay,memo:memo||''}}
+  if(cam){
+    Object.keys(d.notes||{}).forEach(function(k){var v=d.notes[k];if(v.cleanerId!==cam.id||v.cleanOffset==='skip')return;
+      var p=k.split('|'),co=new Date(p[2]+'T00:00:00');co.setDate(co.getDate()+(typeof v.cleanOffset==='number'?v.cleanOffset:0));
+      var ds=co.getFullYear()+'-'+('0'+(co.getMonth()+1)).slice(-2)+'-'+('0'+co.getDate()).slice(-2),r=rooms[p[0]]||{};
+      add(ds,br[r.branchId]||'?',r.name||'?',p[1]+' ~ '+p[2],v.memo)});
+    (d.commonAreaCleanings||[]).forEach(function(c){if(c.cleanerId===cam.id)add(c.date,br[c.branchId]||'?','공용공간'+(c.label?' · '+c.label:''),'',c.memo)});
+  }
+  (d.cleaningLogs||[]).forEach(function(l){if(/camilo|카밀로/i.test(l.cleanerName||''))add(l.date,l.branchName,l.roomName,l.checkin?l.checkin+' ~ '+l.checkout:'',l.memo)});
+  var arr=Object.keys(rows).map(function(k){return rows[k]}).sort(function(a,b){return a.date<b.date?-1:1});
+  sum.innerHTML='Camilo 직원 정보: '+(cam?'<span class="ok">있음</span>':'<span class="no">없음</span>')+'<br>Camilo 청소 내역: <b>'+arr.length+'건</b>'+(arr.length?' ('+arr[0].date+' ~ '+arr[arr.length-1].date+')':'')+'<br>마지막 저장: '+(d.savedAt||'알 수 없음');
+  list.innerHTML=arr.length?'<table><tr><th>날짜</th><th>지점</th><th>방</th><th>메모</th></tr>'+arr.map(function(o){return '<tr><td>'+o.date+'</td><td>'+o.b+'</td><td>'+o.room+'</td><td>'+o.memo+'</td></tr>'}).join('')+'</table>':'없음';
+}
+document.getElementById('dl').onclick=function(){if(!raw)return alert('저장된 기록이 없어요');var a=document.createElement('a');a.href=URL.createObjectURL(new Blob([raw],{type:'application/json'}));a.download='schedule-backup.json';a.click();};
+document.getElementById('cp').onclick=function(){if(!raw)return alert('저장된 기록이 없어요');navigator.clipboard.writeText(raw).then(function(){alert('복사됐어요. 카톡 등으로 사장님께 붙여넣어 보내주세요.')},function(){prompt('아래 내용을 전체 복사하세요',raw)});};
+</script></body></html>
